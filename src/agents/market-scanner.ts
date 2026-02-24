@@ -14,6 +14,12 @@ import {
   EXCHANGES,
   SUPPORTED_PAIRS,
 } from "../types.js";
+import {
+  insertPriceTicks,
+  insertSpreads,
+  getRecentTicksForSymbol,
+  pruneStaleTicksRepo,
+} from "../db/repository.js";
 
 const client = new Anthropic();
 
@@ -191,8 +197,19 @@ async function handleTool(name: string, input: ToolInput): Promise<string> {
       const minSpreadPct = (input.minSpreadPct as number) ?? 0.2;
       const topN         = (input.topN as number) ?? 10;
       const allSpreads: ArbitrageSpread[] = [];
+      const freshTicks:  PriceTick[]      = [];
+
       for (const symbol of SUPPORTED_PAIRS) {
-        const ticks = EXCHANGES.map((ex) => simulateTicker(ex, symbol));
+        // Check DB cache first — skip exchange call if ticks are < 30 s old
+        const cached = getRecentTicksForSymbol(symbol, 30_000);
+        const ticks: PriceTick[] = cached.length === EXCHANGES.length
+          ? cached.map((r) => ({ exchange: r.exchange as Exchange, symbol: r.symbol, bid: r.bid, ask: r.ask, last: r.last, volume24h: r.volume24h, timestamp: r.scannedAt }))
+          : EXCHANGES.map((ex) => {
+              const t = simulateTicker(ex, symbol);
+              freshTicks.push(t);
+              return t;
+            });
+
         for (let i = 0; i < ticks.length; i++) {
           for (let j = 0; j < ticks.length; j++) {
             if (i === j) continue;
@@ -213,6 +230,11 @@ async function handleTool(name: string, input: ToolInput): Promise<string> {
           }
         }
       }
+
+      // Persist fresh ticks and spreads to DB
+      if (freshTicks.length > 0)  insertPriceTicks(freshTicks);
+      if (allSpreads.length  > 0) insertSpreads(allSpreads);
+
       allSpreads.sort((a, b) => b.spreadPct - a.spreadPct);
       return JSON.stringify({ spreads: allSpreads.slice(0, topN), totalFound: allSpreads.length });
     }
@@ -243,6 +265,7 @@ Report the symbol, buy exchange, sell exchange, prices, and spread % for each op
     "Find and rank the top arbitrage spread opportunities available right now.";
 
   console.log("[MarketScanner] Starting scan...");
+  pruneStaleTicksRepo(); // clean up ticks older than 60 s
 
   const messages: Anthropic.MessageParam[] = [
     { role: "user", content: userPrompt },

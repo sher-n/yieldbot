@@ -4,18 +4,25 @@
   "description": "Crypto arbitrage multi-agent framework powered by Claude",
   "type": "module",
   "scripts": {
-    "start": "tsx src/index.ts",
-    "scan": "tsx src/agents/market-scanner.ts",
-    "analyze": "tsx src/agents/opportunity-analyzer.ts",
-    "execute": "tsx src/agents/trade-executor.ts",
-    "risk": "tsx src/agents/risk-manager.ts"
+    "start":       "tsx src/index.ts",
+    "scan":        "tsx src/agents/market-scanner.ts",
+    "analyze":     "tsx src/agents/opportunity-analyzer.ts",
+    "execute":     "tsx src/agents/trade-executor.ts",
+    "risk":        "tsx src/agents/risk-manager.ts",
+    "db:push":     "drizzle-kit push",
+    "db:generate": "drizzle-kit generate",
+    "db:studio":   "drizzle-kit studio"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.40.0"
+    "@anthropic-ai/sdk": "^0.40.0",
+    "better-sqlite3":    "^11.0.0",
+    "drizzle-orm":       "^0.38.0"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
-    "tsx": "^4.19.0",
-    "typescript": "^5.7.0"
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node":           "^22.0.0",
+    "drizzle-kit":           "^0.30.0",
+    "tsx":                   "^4.19.0",
+    "typescript":            "^5.7.0"
   }
 }

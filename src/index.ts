@@ -24,6 +24,11 @@ import { runMarketScanner }       from "./agents/market-scanner.js";
 import { runOpportunityAnalyzer } from "./agents/opportunity-analyzer.js";
 import { runTradeExecutor }       from "./agents/trade-executor.js";
 import { runRiskManager }         from "./agents/risk-manager.js";
+import {
+  getSessionSummary,
+  getTopExchangePairs,
+  getSymbolStats,
+} from "./db/repository.js";
 import type {
   ArbitrageSpread,
   ArbitrageOpportunity,
@@ -54,6 +59,7 @@ async function runArbitrageLoop(maxIterations = CONFIG.maxIterations) {
   console.log(`  Scan interval: ${CONFIG.scanIntervalMs / 1000}s`);
   console.log("=".repeat(60));
 
+  const sessionStart    = Date.now();
   const sessionResults: TradeResult[] = [];
   let iteration = 0;
 
@@ -113,14 +119,21 @@ async function runArbitrageLoop(maxIterations = CONFIG.maxIterations) {
     }
   }
 
+  const summary = getSessionSummary(sessionStart);
   console.log("\n" + "=".repeat(60));
   console.log("  YieldBot — Session Complete");
-  console.log(`  Total trades executed: ${sessionResults.length}`);
-  const totalProfit = sessionResults.reduce(
-    (sum, r) => sum + r.actualProfitUSD,
-    0
-  );
-  console.log(`  Total realized profit: $${totalProfit.toFixed(2)}`);
+  console.log(`  Trades executed : ${summary.tradeCount}`);
+  console.log(`  Win rate        : ${(summary.winRate * 100).toFixed(1)}%`);
+  console.log(`  Total profit    : $${summary.totalProfitUsd.toFixed(2)}`);
+  console.log(`  Avg profit/trade: $${summary.avgProfitUsd.toFixed(2)}`);
+
+  const topPairs = getTopExchangePairs(3);
+  if (topPairs.length > 0) {
+    console.log("\n  Top exchange pairs this session:");
+    topPairs.forEach((p) =>
+      console.log(`    ${p.buyExchange} → ${p.sellExchange}  avg ${p.avgNetProfitPct.toFixed(3)}%  (${p.tradeCount} trades)`)
+    );
+  }
   console.log("=".repeat(60));
 }
 
