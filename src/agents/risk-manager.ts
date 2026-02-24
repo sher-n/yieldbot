@@ -13,6 +13,7 @@ import {
   type RiskReport,
   type TradeResult,
 } from "../types.js";
+import { insertRiskSnapshot, getSessionSummary } from "../db/repository.js";
 
 const client = new Anthropic();
 
@@ -211,7 +212,15 @@ async function handleTool(name: string, input: ToolInput): Promise<string> {
         : alerts.some((a) => a.startsWith("WARNING"))  ? "high"
         : "low";
 
-      return JSON.stringify({ period, report: { timestamp: Date.now(), portfolio: mockPortfolio, riskLevel, alerts, recommendations } });
+      const report: RiskReport = {
+        timestamp:      Date.now(),
+        portfolio:      mockPortfolio,
+        riskLevel,
+        alerts,
+        recommendations,
+      };
+      insertRiskSnapshot(report); // persist snapshot
+      return JSON.stringify({ period, report });
     }
 
     default:

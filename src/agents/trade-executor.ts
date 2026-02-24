@@ -13,6 +13,7 @@ import {
   type Order,
   type TradeResult,
 } from "../types.js";
+import { insertOrder, insertTradeResult } from "../db/repository.js";
 
 const client = new Anthropic();
 
@@ -214,6 +215,12 @@ async function handleTool(name: string, input: ToolInput): Promise<string> {
         actualProfitPct:  profitPct,
         status,
       };
+
+      // Persist orders and trade result to DB
+      insertOrder(filledBuy,  opportunityId as string);
+      insertOrder(filledSell, opportunityId as string);
+      insertTradeResult(result, (tradeAmountUSD as number) * 0.003, 0.11); // placeholder estimates
+
       console.log(`[TradeExecutor] Trade ${opportunityId} | ${status} | Profit: $${profit.toFixed(2)} (${profitPct.toFixed(4)}%)`);
       return JSON.stringify(result);
     }

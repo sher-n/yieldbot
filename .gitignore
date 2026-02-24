@@ -1,3 +1,11 @@
+# SQLite databases
+*.db
+*.db-shm
+*.db-wal
+
+# Drizzle migration snapshots (generated, not committed)
+drizzle/
+
 # Logs
 logs
 *.log

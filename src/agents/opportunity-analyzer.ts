@@ -13,6 +13,7 @@ import {
   type ArbitrageOpportunity,
   FEE_TABLE,
 } from "../types.js";
+import { insertOpportunity } from "../db/repository.js";
 
 const client = new Anthropic();
 
@@ -185,6 +186,7 @@ async function handleTool(name: string, input: ToolInput): Promise<string> {
       const netProfitUSD  = (netProfitPct / 100) * tradeAmountUSD;
       const viable = netProfitPct > 0.05 && liquidityOk;
 
+      // Persist every analyzed opportunity (viable or not) for analytics
       const opportunity: ArbitrageOpportunity = {
         id: opportunityId as string,
         spread: {
@@ -210,6 +212,7 @@ async function handleTool(name: string, input: ToolInput): Promise<string> {
           ? `Net profit ${netProfitPct.toFixed(4)}% below 0.05% minimum after fees & slippage`
           : undefined,
       };
+      insertOpportunity(opportunity);
       return JSON.stringify(opportunity);
     }
 
