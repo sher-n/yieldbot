@@ -8,13 +8,28 @@
     "scan": "tsx src/agents/market-scanner.ts",
     "analyze": "tsx src/agents/opportunity-analyzer.ts",
     "execute": "tsx src/agents/trade-executor.ts",
-    "risk": "tsx src/agents/risk-manager.ts"
+    "risk": "tsx src/agents/risk-manager.ts",
+    "db:push": "drizzle-kit push",
+    "db:generate": "drizzle-kit generate",
+    "db:studio": "drizzle-kit studio",
+    "dev": "concurrently \"bun run server/index.ts\" \"npm --prefix dashboard run dev\"",
+    "dev:api": "bun run server/index.ts",
+    "dev:ui": "npm --prefix dashboard run dev",
+    "build:ui": "npm --prefix dashboard run build",
+    "start:ui": "npm run build:ui && bun run server/index.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.40.0"
+    "@anthropic-ai/sdk": "^0.40.0",
+    "@elysiajs/cors": "^1.4.1",
+    "better-sqlite3": "^11.0.0",
+    "drizzle-orm": "^0.38.0",
+    "elysia": "^1.4.25"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.0.0",
+    "concurrently": "^9.2.1",
+    "drizzle-kit": "^0.30.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   }
