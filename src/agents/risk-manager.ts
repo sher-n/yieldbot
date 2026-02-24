@@ -1,14 +1,11 @@
 /**
  * Risk Manager Agent
  *
- * Continuously monitors open positions, enforces risk limits (max drawdown,
- * position size, daily loss cap), generates performance reports, and issues
- * alerts or halt signals when thresholds are breached.
+ * Monitors open positions, enforces risk limits (max drawdown, daily loss cap,
+ * win rate floor), generates performance reports, and issues halt signals.
  */
 
 import Anthropic from "@anthropic-ai/sdk";
-import { betaZodTool } from "@anthropic-ai/sdk/helpers/beta/zod";
-import { z } from "zod";
 import {
   type Exchange,
   type Position,
@@ -20,26 +17,25 @@ import {
 const client = new Anthropic();
 
 // ---------------------------------------------------------------------------
-// Risk configuration — tune these for production
+// Risk configuration
 // ---------------------------------------------------------------------------
 
 const RISK_CONFIG = {
-  maxDrawdownPct:       5.0,   // Halt if drawdown exceeds 5%
-  maxPositionSizeUSD:  50_000, // No single position > $50k
-  dailyLossCapUSD:    -2_000,  // Stop trading if daily loss > $2k
-  maxOpenPositions:       10,  // No more than 10 simultaneous trades
-  minWinRate:          0.55,   // Alert if win rate drops below 55%
-  maxSlippagePct:        0.5,  // Alert if avg slippage > 0.5%
+  maxDrawdownPct:      5.0,
+  maxPositionSizeUSD: 50_000,
+  dailyLossCapUSD:   -2_000,
+  maxOpenPositions:     10,
+  minWinRate:          0.55,
 };
 
 // ---------------------------------------------------------------------------
-// Mock portfolio state (replace with real DB / exchange API)
+// Mock portfolio state
 // ---------------------------------------------------------------------------
 
 let mockPortfolio: PortfolioSnapshot = {
   totalValueUSD:       100_000,
   availableCapitalUSD:  75_000,
-  openPositions: [],
+  openPositions:        [],
   dailyPnlUSD:          350,
   dailyPnlPct:          0.35,
   maxDrawdownPct:        1.2,
@@ -48,238 +44,180 @@ let mockPortfolio: PortfolioSnapshot = {
 };
 
 // ---------------------------------------------------------------------------
-// Tool definitions
+// Tool definitions (raw JSON schema)
 // ---------------------------------------------------------------------------
 
-const getPortfolioTool = betaZodTool({
-  name: "get_portfolio",
-  description:
-    "Retrieve the current portfolio snapshot including total value, " +
-    "available capital, open positions, and daily P&L.",
-  inputSchema: z.object({}),
-  run: async () => {
-    // Add slight drift to simulate live market movement
-    mockPortfolio.totalValueUSD += (Math.random() - 0.48) * 50;
-    mockPortfolio.dailyPnlUSD   += (Math.random() - 0.48) * 20;
-    mockPortfolio.dailyPnlPct    =
-      (mockPortfolio.dailyPnlUSD / mockPortfolio.totalValueUSD) * 100;
-    return JSON.stringify(mockPortfolio);
+const TOOLS: Anthropic.Tool[] = [
+  {
+    name: "get_portfolio",
+    description: "Retrieve the current portfolio snapshot including total value, available capital, open positions, and daily P&L.",
+    input_schema: { type: "object", properties: {}, required: [] },
   },
-});
-
-const getOpenPositionsTool = betaZodTool({
-  name: "get_open_positions",
-  description: "List all currently open arbitrage positions with unrealized P&L.",
-  inputSchema: z.object({}),
-  run: async () => {
-    // Simulate a couple of open positions for demo
-    const positions: Position[] = mockPortfolio.openPositions.length > 0
-      ? mockPortfolio.openPositions
-      : [
-          {
-            symbol:           "ETH/USDT",
-            exchange:         "binance" as Exchange,
-            side:             "long",
-            amount:           2.0,
-            entryPrice:       3490,
-            currentPrice:     3512,
-            unrealizedPnl:    44,
-            unrealizedPnlPct: 0.63,
-          },
-        ];
-    return JSON.stringify({ positions, count: positions.length });
+  {
+    name: "get_open_positions",
+    description: "List all currently open arbitrage positions with unrealized P&L.",
+    input_schema: { type: "object", properties: {}, required: [] },
   },
-});
+  {
+    name: "check_risk_limits",
+    description: "Evaluate current portfolio metrics against configured risk limits.",
+    input_schema: {
+      type: "object",
+      properties: {
+        totalValueUSD:       { type: "number" },
+        availableCapitalUSD: { type: "number" },
+        dailyPnlUSD:         { type: "number" },
+        maxDrawdownPct:      { type: "number" },
+        winRate:             { type: "number" },
+        openPositionCount:   { type: "number" },
+      },
+      required: ["totalValueUSD", "availableCapitalUSD", "dailyPnlUSD", "maxDrawdownPct", "winRate", "openPositionCount"],
+    },
+  },
+  {
+    name: "calculate_pnl",
+    description: "Compute realized P&L across a set of trade results, broken down by symbol.",
+    input_schema: {
+      type: "object",
+      properties: {
+        tradeResults: { type: "array", items: { type: "object" } },
+        period:       { type: "string", enum: ["session", "daily", "weekly"] },
+      },
+      required: ["tradeResults"],
+    },
+  },
+  {
+    name: "set_stop_loss",
+    description: "Register a stop-loss price for a symbol on an open position.",
+    input_schema: {
+      type: "object",
+      properties: {
+        symbol:        { type: "string" },
+        stopLossPrice: { type: "number" },
+        positionSide:  { type: "string", enum: ["long", "short"] },
+      },
+      required: ["symbol", "stopLossPrice", "positionSide"],
+    },
+  },
+  {
+    name: "issue_trading_halt",
+    description: "Issue a trading halt signal when risk limits are critically breached.",
+    input_schema: {
+      type: "object",
+      properties: {
+        reason:   { type: "string" },
+        severity: { type: "string", enum: ["warning", "halt", "emergency"] },
+        duration: { type: "number", description: "Halt duration in minutes (omit for indefinite)" },
+      },
+      required: ["reason", "severity"],
+    },
+  },
+  {
+    name: "generate_report",
+    description: "Generate a comprehensive risk and performance report for the specified period.",
+    input_schema: {
+      type: "object",
+      properties: {
+        period:                 { type: "string", enum: ["session", "daily", "weekly"] },
+        includeRecommendations: { type: "boolean" },
+      },
+      required: [],
+    },
+  },
+];
 
-const checkRiskLimitsTool = betaZodTool({
-  name: "check_risk_limits",
-  description:
-    "Evaluate current portfolio metrics against configured risk limits. " +
-    "Returns a pass/fail for each limit and overall risk status.",
-  inputSchema: z.object({
-    totalValueUSD:       z.number(),
-    availableCapitalUSD: z.number(),
-    dailyPnlUSD:         z.number(),
-    maxDrawdownPct:      z.number(),
-    winRate:             z.number(),
-    openPositionCount:   z.number(),
-  }),
-  run: async ({
-    dailyPnlUSD,
-    maxDrawdownPct,
-    winRate,
-    openPositionCount,
-  }) => {
-    const checks = {
-      drawdown:      { pass: maxDrawdownPct <= RISK_CONFIG.maxDrawdownPct,       value: maxDrawdownPct,     limit: RISK_CONFIG.maxDrawdownPct       },
-      dailyLoss:     { pass: dailyPnlUSD    >= RISK_CONFIG.dailyLossCapUSD,      value: dailyPnlUSD,        limit: RISK_CONFIG.dailyLossCapUSD      },
-      openPositions: { pass: openPositionCount <= RISK_CONFIG.maxOpenPositions,  value: openPositionCount,  limit: RISK_CONFIG.maxOpenPositions     },
-      winRate:       { pass: winRate        >= RISK_CONFIG.minWinRate,           value: winRate,            limit: RISK_CONFIG.minWinRate           },
-    };
+// ---------------------------------------------------------------------------
+// Tool handlers
+// ---------------------------------------------------------------------------
 
-    const allPass = Object.values(checks).every((c) => c.pass);
-    const riskLevel =
-      !checks.drawdown.pass || !checks.dailyLoss.pass
-        ? "critical"
-        : !checks.winRate.pass
-        ? "high"
-        : !checks.openPositions.pass
-        ? "medium"
+type ToolInput = Record<string, unknown>;
+
+async function handleTool(name: string, input: ToolInput): Promise<string> {
+  switch (name) {
+    case "get_portfolio": {
+      mockPortfolio.totalValueUSD += (Math.random() - 0.48) * 50;
+      mockPortfolio.dailyPnlUSD   += (Math.random() - 0.48) * 20;
+      mockPortfolio.dailyPnlPct    = (mockPortfolio.dailyPnlUSD / mockPortfolio.totalValueUSD) * 100;
+      return JSON.stringify(mockPortfolio);
+    }
+
+    case "get_open_positions": {
+      const positions: Position[] = mockPortfolio.openPositions.length > 0
+        ? mockPortfolio.openPositions
+        : [{ symbol: "ETH/USDT", exchange: "binance" as Exchange, side: "long", amount: 2.0, entryPrice: 3490, currentPrice: 3512, unrealizedPnl: 44, unrealizedPnlPct: 0.63 }];
+      return JSON.stringify({ positions, count: positions.length });
+    }
+
+    case "check_risk_limits": {
+      const { dailyPnlUSD, maxDrawdownPct, winRate, openPositionCount } = input as Record<string, number>;
+      const checks = {
+        drawdown:      { pass: maxDrawdownPct    <= RISK_CONFIG.maxDrawdownPct,    value: maxDrawdownPct,    limit: RISK_CONFIG.maxDrawdownPct    },
+        dailyLoss:     { pass: dailyPnlUSD       >= RISK_CONFIG.dailyLossCapUSD,   value: dailyPnlUSD,       limit: RISK_CONFIG.dailyLossCapUSD   },
+        openPositions: { pass: openPositionCount <= RISK_CONFIG.maxOpenPositions,  value: openPositionCount, limit: RISK_CONFIG.maxOpenPositions   },
+        winRate:       { pass: winRate           >= RISK_CONFIG.minWinRate,        value: winRate,           limit: RISK_CONFIG.minWinRate         },
+      };
+      const riskLevel =
+        !checks.drawdown.pass || !checks.dailyLoss.pass ? "critical"
+        : !checks.winRate.pass                          ? "high"
+        : !checks.openPositions.pass                    ? "medium"
+        : "low";
+      return JSON.stringify({ checks, allPass: Object.values(checks).every((c) => c.pass), riskLevel, config: RISK_CONFIG });
+    }
+
+    case "calculate_pnl": {
+      const results = input.tradeResults as TradeResult[];
+      const period  = (input.period as string) ?? "session";
+      const total   = results.reduce((s, r) => s + (r.actualProfitUSD ?? 0), 0);
+      const success = results.filter((r) => r.status === "success").length;
+      const bySymbol = results.reduce<Record<string, number>>((acc, r) => {
+        const sym = r.buyOrder?.symbol ?? "unknown";
+        acc[sym] = (acc[sym] ?? 0) + (r.actualProfitUSD ?? 0);
+        return acc;
+      }, {});
+      return JSON.stringify({ period, totalProfitUSD: total, winRate: results.length ? success / results.length : 0, successCount: success, tradeCount: results.length, bySymbol });
+    }
+
+    case "set_stop_loss": {
+      console.log(`[RiskManager] Stop-loss: ${input.symbol} | side=${input.positionSide} | trigger=$${input.stopLossPrice}`);
+      return JSON.stringify({ registered: true, ...input, timestamp: Date.now() });
+    }
+
+    case "issue_trading_halt": {
+      console.warn(`[RiskManager] ⚠️  TRADING ${String(input.severity).toUpperCase()}: ${input.reason}`);
+      return JSON.stringify({ halted: true, ...input, timestamp: Date.now() });
+    }
+
+    case "generate_report": {
+      const period = (input.period as string) ?? "session";
+      const alerts: string[] = [];
+      const recommendations: string[] = [];
+
+      if (mockPortfolio.maxDrawdownPct > RISK_CONFIG.maxDrawdownPct)
+        alerts.push(`CRITICAL: Drawdown ${mockPortfolio.maxDrawdownPct.toFixed(2)}% exceeds ${RISK_CONFIG.maxDrawdownPct}% limit`);
+      if (mockPortfolio.dailyPnlUSD < RISK_CONFIG.dailyLossCapUSD)
+        alerts.push(`CRITICAL: Daily loss $${mockPortfolio.dailyPnlUSD.toFixed(2)} exceeds cap`);
+      if (mockPortfolio.winRate < RISK_CONFIG.minWinRate)
+        alerts.push(`WARNING: Win rate ${(mockPortfolio.winRate * 100).toFixed(1)}% below ${RISK_CONFIG.minWinRate * 100}% minimum`);
+
+      if (alerts.length === 0) {
+        recommendations.push("System operating within all risk parameters");
+        recommendations.push(`Win rate ${(mockPortfolio.winRate * 100).toFixed(1)}% — consider increasing trade size if sustained`);
+      } else {
+        recommendations.push("Review and reduce position sizes");
+      }
+
+      const riskLevel: RiskReport["riskLevel"] =
+        alerts.some((a) => a.startsWith("CRITICAL")) ? "critical"
+        : alerts.some((a) => a.startsWith("WARNING"))  ? "high"
         : "low";
 
-    return JSON.stringify({ checks, allPass, riskLevel, config: RISK_CONFIG });
-  },
-});
-
-const calculatePnlTool = betaZodTool({
-  name: "calculate_pnl",
-  description:
-    "Compute realized and unrealized P&L across a set of trade results, " +
-    "broken down by symbol and exchange pair.",
-  inputSchema: z.object({
-    tradeResults: z
-      .array(z.record(z.unknown()))
-      .describe("Array of TradeResult objects"),
-    period: z
-      .enum(["session", "daily", "weekly"])
-      .default("session")
-      .describe("Aggregation period"),
-  }),
-  run: async ({ tradeResults, period }) => {
-    const results = tradeResults as TradeResult[];
-    const totalProfitUSD = results.reduce(
-      (sum, r) => sum + (r.actualProfitUSD ?? 0),
-      0
-    );
-    const successCount = results.filter((r) => r.status === "success").length;
-    const partialCount = results.filter((r) => r.status === "partial").length;
-    const failedCount  = results.filter((r) => r.status === "failed").length;
-    const winRate      = results.length > 0 ? successCount / results.length : 0;
-
-    const bySymbol = results.reduce<Record<string, number>>((acc, r) => {
-      const sym = r.buyOrder?.symbol ?? "unknown";
-      acc[sym] = (acc[sym] ?? 0) + (r.actualProfitUSD ?? 0);
-      return acc;
-    }, {});
-
-    return JSON.stringify({
-      period,
-      totalProfitUSD,
-      winRate,
-      successCount,
-      partialCount,
-      failedCount,
-      tradeCount: results.length,
-      bySymbol,
-    });
-  },
-});
-
-const setStopLossTool = betaZodTool({
-  name: "set_stop_loss",
-  description:
-    "Register a stop-loss price for a symbol. If the market reaches this " +
-    "level, all open positions for that symbol will be closed.",
-  inputSchema: z.object({
-    symbol:         z.string(),
-    stopLossPrice:  z.number().describe("Price at which to trigger stop loss"),
-    positionSide:   z.enum(["long", "short"]),
-  }),
-  run: async ({ symbol, stopLossPrice, positionSide }) => {
-    console.log(
-      `[RiskManager] Stop-loss set: ${symbol} | side=${positionSide} | trigger=$${stopLossPrice}`
-    );
-    return JSON.stringify({
-      registered: true,
-      symbol,
-      stopLossPrice,
-      positionSide,
-      timestamp: Date.now(),
-    });
-  },
-});
-
-const issueTradingHaltTool = betaZodTool({
-  name: "issue_trading_halt",
-  description:
-    "Issue a trading halt signal when risk limits are critically breached. " +
-    "This prevents new trades from being submitted until conditions improve.",
-  inputSchema: z.object({
-    reason:    z.string().describe("Human-readable reason for the halt"),
-    severity:  z.enum(["warning", "halt", "emergency"]),
-    duration:  z
-      .number()
-      .optional()
-      .describe("Halt duration in minutes (omit for indefinite)"),
-  }),
-  run: async ({ reason, severity, duration }) => {
-    console.warn(`[RiskManager] ⚠️  TRADING ${severity.toUpperCase()}: ${reason}`);
-    return JSON.stringify({
-      halted: true,
-      severity,
-      reason,
-      duration: duration ?? "indefinite",
-      timestamp: Date.now(),
-    });
-  },
-});
-
-const generateReportTool = betaZodTool({
-  name: "generate_report",
-  description:
-    "Generate a comprehensive risk and performance report for the specified " +
-    "period, including P&L, risk metrics, alerts, and recommendations.",
-  inputSchema: z.object({
-    period: z
-      .enum(["session", "daily", "weekly"])
-      .default("session")
-      .describe("Report period"),
-    includeRecommendations: z
-      .boolean()
-      .default(true)
-      .describe("Include actionable recommendations"),
-  }),
-  run: async ({ period, includeRecommendations }) => {
-    const portfolio = mockPortfolio;
-
-    const alerts: string[] = [];
-    const recommendations: string[] = [];
-
-    if (portfolio.maxDrawdownPct > RISK_CONFIG.maxDrawdownPct) {
-      alerts.push(`CRITICAL: Drawdown ${portfolio.maxDrawdownPct.toFixed(2)}% exceeds limit of ${RISK_CONFIG.maxDrawdownPct}%`);
-      recommendations.push("Reduce position sizes immediately and review losing trades");
-    }
-    if (portfolio.dailyPnlUSD < RISK_CONFIG.dailyLossCapUSD) {
-      alerts.push(`CRITICAL: Daily loss $${portfolio.dailyPnlUSD.toFixed(2)} exceeds cap of $${RISK_CONFIG.dailyLossCapUSD}`);
-      recommendations.push("Halt trading for the rest of the session");
-    }
-    if (portfolio.winRate < RISK_CONFIG.minWinRate) {
-      alerts.push(`WARNING: Win rate ${(portfolio.winRate * 100).toFixed(1)}% below minimum ${RISK_CONFIG.minWinRate * 100}%`);
-      recommendations.push("Review opportunity selection criteria — spread threshold may need raising");
+      return JSON.stringify({ period, report: { timestamp: Date.now(), portfolio: mockPortfolio, riskLevel, alerts, recommendations } });
     }
 
-    if (includeRecommendations && alerts.length === 0) {
-      recommendations.push("System operating within all risk parameters");
-      recommendations.push(`Current win rate ${(portfolio.winRate * 100).toFixed(1)}% — consider increasing trade size if sustained`);
-    }
-
-    const riskLevel: RiskReport["riskLevel"] =
-      alerts.some((a) => a.startsWith("CRITICAL")) ? "critical"
-      : alerts.some((a) => a.startsWith("WARNING"))  ? "high"
-      : portfolio.maxDrawdownPct > RISK_CONFIG.maxDrawdownPct * 0.7 ? "medium"
-      : "low";
-
-    const report: RiskReport = {
-      timestamp:      Date.now(),
-      portfolio,
-      riskLevel,
-      alerts,
-      recommendations,
-    };
-
-    return JSON.stringify({ period, report });
-  },
-});
+    default:
+      return JSON.stringify({ error: `Unknown tool: ${name}` });
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Agent runner
@@ -302,40 +240,52 @@ Your responsibilities:
 4. Set stop-losses for open positions at risk
 5. Generate a comprehensive report with actionable recommendations
 
-Be conservative and protect capital above all else. Issue a halt proactively if
-approaching (80%+) any critical limit.`;
+Be conservative — protect capital above all else.`;
 
   const userPrompt =
     prompt ??
-    `Perform a full risk assessment of the current portfolio. ` +
-    `Trade results from this session: ${JSON.stringify(tradeResults.slice(0, 20))}. ` +
+    `Perform a full risk assessment. Session trade results: ${JSON.stringify(tradeResults.slice(0, 20))}. ` +
     `Check all risk limits, update stop-losses, and generate a report.`;
 
   console.log("[RiskManager] Running risk assessment...");
 
-  const finalMessage = await client.beta.messages.toolRunner({
-    model: "claude-opus-4-6",
-    max_tokens: 8192,
-    thinking: { type: "adaptive" },
-    system: systemPrompt,
-    tools: [
-      getPortfolioTool,
-      getOpenPositionsTool,
-      checkRiskLimitsTool,
-      calculatePnlTool,
-      setStopLossTool,
-      issueTradingHaltTool,
-      generateReportTool,
-    ],
-    messages: [{ role: "user", content: userPrompt }],
-  });
+  const messages: Anthropic.MessageParam[] = [
+    { role: "user", content: userPrompt },
+  ];
 
-  const text = finalMessage.content
-    .filter((b) => b.type === "text")
-    .map((b) => (b as { type: "text"; text: string }).text)
-    .join("\n");
+  while (true) {
+    const response = await client.messages.create({
+      model:      "claude-opus-4-6",
+      max_tokens: 8192,
+      thinking:   { type: "adaptive" },
+      system:     systemPrompt,
+      tools:      TOOLS,
+      messages,
+    });
 
-  console.log("[RiskManager] Result:\n", text);
+    messages.push({ role: "assistant", content: response.content });
+
+    if (response.stop_reason === "end_turn") {
+      const text = response.content
+        .filter((b): b is Anthropic.TextBlock => b.type === "text")
+        .map((b) => b.text)
+        .join("\n");
+      console.log("[RiskManager] Result:\n", text);
+      break;
+    }
+
+    const toolResults: Anthropic.ToolResultBlockParam[] = [];
+    for (const block of response.content) {
+      if (block.type === "tool_use") {
+        const result = await handleTool(block.name, block.input as ToolInput);
+        toolResults.push({ type: "tool_result", tool_use_id: block.id, content: result });
+      }
+    }
+    if (toolResults.length > 0) {
+      messages.push({ role: "user", content: toolResults });
+    }
+  }
+
   return null;
 }
 
