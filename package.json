@@ -12,11 +12,11 @@
     "db:push": "drizzle-kit push",
     "db:generate": "drizzle-kit generate",
     "db:studio": "drizzle-kit studio",
-    "dev": "concurrently \"bun run server/index.ts\" \"npm --prefix dashboard run dev\"",
-    "dev:api": "bun run server/index.ts",
+    "dev": "concurrently \"%USERPROFILE%\\.bun\\bin\\bun run server/index.ts\" \"npm --prefix dashboard run dev\"",
+    "dev:api": "%USERPROFILE%\\.bun\\bin\\bun run server/index.ts",
     "dev:ui": "npm --prefix dashboard run dev",
     "build:ui": "npm --prefix dashboard run build",
-    "start:ui": "npm run build:ui && bun run server/index.ts"
+    "start:ui": "npm run build:ui && %USERPROFILE%\\.bun\\bin\\bun run server/index.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.40.0",
